@@ -103,6 +103,30 @@ public class Module_net
         public string lgrpi1_comment;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct GROUP_INFO_1
+    {
+        public string grpi1_name;
+        public string grpi1_comment;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct GROUP_INFO_2
+    {
+        public string grpi2_name;
+        public string grpi2_comment;
+        public int grpi2_group_id;
+        public int grpi2_attributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct GROUP_USERS_INFO_0
+    {
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string usri0_name;
+    }
+
+
     // NET USER 
     [DllImport("Netapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern uint NetUserAdd(
@@ -138,6 +162,13 @@ public class Module_net
         [MarshalAs(UnmanagedType.LPWStr)] string username
     );
     
+    [DllImport("netapi32.dll", SetLastError = true)]
+    public static extern int NetGroupDelUser(
+        [MarshalAs(UnmanagedType.LPWStr)] string serverName,
+        [MarshalAs(UnmanagedType.LPWStr)] string groupName,
+        [MarshalAs(UnmanagedType.LPWStr)] string userName);
+
+    
     [DllImport("Netapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern int NetUserSetInfo(
         [MarshalAs(UnmanagedType.LPWStr)] string servername,
@@ -159,14 +190,12 @@ public class Module_net
         IntPtr resume_handle
     );
 
-    [DllImport("Netapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern uint NetLocalGroupAddMembers(
-        [MarshalAs(UnmanagedType.LPWStr)] string servername,
-        [MarshalAs(UnmanagedType.LPWStr)] string groupname,
-        uint level,
-        ref LOCALGROUP_MEMBERS_INFO_3 buf,
-        uint totalentries
-    );
+    [DllImport("netapi32.dll", SetLastError = true)]
+    public static extern int NetGroupAddUser(
+        [MarshalAs(UnmanagedType.LPWStr)] string serverName,
+        [MarshalAs(UnmanagedType.LPWStr)] string groupName,
+        [MarshalAs(UnmanagedType.LPWStr)] string userName);
+
 
     [DllImport("Netapi32.dll", CharSet = CharSet.Unicode)]
     public static extern int NetLocalGroupGetMembers(
@@ -211,6 +240,54 @@ public class Module_net
         out IntPtr bufptr
     );
 
+    // NET GROUP /DOMAIN
+    [DllImport("Netapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern int NetGroupEnum(
+        string servername,
+        int level,
+        out IntPtr bufptr,
+        int prefmaxlen,
+        out int entriesread,
+        out int totalentries,
+        IntPtr resume_handle);
+
+    [DllImport("Netapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int NetGroupGetUsers(
+        string servername,
+        string groupname,
+        int level,
+        out IntPtr bufptr,
+        int prefmaxlen,
+        out int entriesread,
+        out int totalentries,
+        IntPtr resumehandle);
+
+    [DllImport("Netapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int NetGroupGetInfo(
+        string servername,
+        string groupname,
+        int level,
+        out IntPtr bufptr);
+
+    [DllImport("netapi32.dll", SetLastError = true)]
+    public static extern int NetLocalGroupAddMembers(
+        [MarshalAs(UnmanagedType.LPWStr)] string serverName,
+        [MarshalAs(UnmanagedType.LPWStr)] string groupName,
+        int level,
+        ref LOCALGROUP_MEMBERS_INFO_3 members,
+        int totalEntries);
+    
+    [DllImport("netapi32.dll", SetLastError = true)]
+    public static extern int NetLocalGroupSetInfo(
+        [MarshalAs(UnmanagedType.LPWStr)] string serverName,
+        [MarshalAs(UnmanagedType.LPWStr)] string groupName,
+        int level,
+        ref LOCALGROUP_INFO_1 groupInfo,
+        out uint param_err);
+
+
+    // END NET 
+
     [DllImport("Netapi32.dll")]
     public static extern void NetApiBufferFree(
         IntPtr buffer
@@ -224,6 +301,8 @@ public class Module_net
     [DllImport("advapi32.dll", SetLastError = true)]
     public static extern bool RevertToSelf();
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hModule);
 
     private void ImpersonateWithToken(string token)
     {
@@ -250,6 +329,13 @@ public class Module_net
 
         if (current_username == impersonate_username)
             throw new Exception("ImpersonateLoggedOnUser worked, but thread running as user " + current_username);
+    }
+
+    private void freeToken(string token)
+    {
+        int token_int = Int32.Parse(token);
+        IntPtr token_ref = new IntPtr(token_int);
+        CloseHandle(token_ref);
     }
 
     private string hex2Str(string hex)
@@ -339,7 +425,7 @@ public class Module_net
         List<string> globalGroups = new List<string>();
         IntPtr buffer;
         int entriesRead, totalEntries;
-        int result = NetUserGetGroups(null, username, 0, out buffer, MAXPREFERREDLENGTH, out entriesRead, out totalEntries);
+        int result = NetUserGetGroups(domain, username, 0, out buffer, MAXPREFERREDLENGTH, out entriesRead, out totalEntries);
         if (result == 0)
         {
             for (int i = 0; i < entriesRead; i++)
@@ -370,6 +456,26 @@ public class Module_net
         }
         return groups;
     }
+    private List<string> GetAllDomainGroups(string domain)
+    {
+        List<string> groups = new List<string>();
+        IntPtr buffer;
+        int entriesRead, totalEntries;
+        int result = NetGroupEnum(domain, 1, out buffer, MAXPREFERREDLENGTH, out entriesRead, out totalEntries, IntPtr.Zero);
+        if (result == 0)
+        {
+            for (int i = 0; i < entriesRead; i++)
+            {
+                IntPtr current = new IntPtr(buffer.ToInt64() + (i * Marshal.SizeOf(typeof(GROUP_INFO_1))));
+                GROUP_INFO_1 groupInfo = (GROUP_INFO_1)Marshal.PtrToStructure(current, typeof(GROUP_INFO_1));
+                groups.Add(groupInfo.grpi1_name);
+            }
+            NetApiBufferFree(buffer);
+        }
+
+        return groups;
+    }
+
 
     private List<string> GetLocalGroupMembers(string groupName)
     {
@@ -390,13 +496,39 @@ public class Module_net
         return members;
     }
 
-    private bool AddUserToLocalGroup(string username, string groupName, string domain)
+    private List<string> GetDomainGroupMembers(string domain, string groupName)
+    {
+        List<string> members = new List<string>();
+        IntPtr buffer;
+        int entriesRead, totalEntries;
+        int result = NetGroupGetUsers(domain, groupName, 0, out buffer, MAXPREFERREDLENGTH, out entriesRead, out totalEntries, IntPtr.Zero);
+        if (result == 0)
+        {
+            for (int i = 0; i < entriesRead; i++)
+            {
+                IntPtr current = new IntPtr(buffer.ToInt64() + (i * Marshal.SizeOf(typeof(GROUP_USERS_INFO_0))));
+                GROUP_USERS_INFO_0 userInfo = (GROUP_USERS_INFO_0)Marshal.PtrToStructure(current, typeof(GROUP_USERS_INFO_0));
+                members.Add(userInfo.usri0_name);
+            }
+            NetApiBufferFree(buffer);
+        }
+        return members;
+    }
+
+
+    private bool AddUserToLocalGroup(string username, string groupName)
     {
         LOCALGROUP_MEMBERS_INFO_3 memberInfo = new LOCALGROUP_MEMBERS_INFO_3();
         memberInfo.lgrmi3_domainandname = username;
 
-        uint result = NetLocalGroupAddMembers(domain, groupName, 3, ref memberInfo, 1);
+        uint result =  (uint)NetLocalGroupAddMembers(null, groupName, 3, ref memberInfo, 1);
         return (result == 0);
+    }
+
+    private bool AddUserToDomainGroup(string username, string groupName, string domain)
+    {
+        uint result = (uint)NetGroupAddUser(domain, groupName, username);        
+        return result == 0;
     }
 
     private string[] doNetUser(string action, string[] parm_args)
@@ -607,7 +739,7 @@ public class Module_net
                 string domain = parm_args[0];
                 string username = parm_args[1];
 
-                int resultCode = NetUserDel(domain, username);
+                int resultCode = NetUserDel(null, username);
 
                 if (resultCode == 0)
                 {
@@ -636,9 +768,15 @@ public class Module_net
             if (action == "list")
             {
                 string domain = parm_args[0];
+                List<string> allGroups;  
+                if (domain != ".")
+                { 
+                    allGroups = GetAllDomainGroups(domain);
 
-                // Get all groups
-                List<string> allGroups = GetAllLocalGroups(domain);
+                }else{
+                    allGroups = GetAllLocalGroups(domain);
+
+                }  
                 
                 // Get the host name
                 string hostName = Dns.GetHostName();
@@ -662,8 +800,17 @@ public class Module_net
                 string domain = parm_args[0];
                 string usernameToAdd = parm_args[1];
                 string groupName = normalizePath(parm_args[2]);
-                               
-                bool success = AddUserToLocalGroup(usernameToAdd, groupName, domain);
+                
+                bool success = false;
+                
+                if (domain != ".") 
+                {
+                    success = AddUserToDomainGroup(usernameToAdd, groupName, domain); 
+                }
+                else 
+                {
+                    success = AddUserToLocalGroup(usernameToAdd, groupName);
+                }
                 if (success)
                 {
                     result += "User '" + usernameToAdd + "' in the '"+ domain + "' added to group '" + groupName + "' successfully." + Environment.NewLine;
@@ -673,71 +820,103 @@ public class Module_net
                     result += "Failed to add user '" + usernameToAdd + "' in the '"+ domain + "' to group '" + groupName + "'." + Environment.NewLine;
                 }
             }
+
             else if (action == "info")
             {
                 string domain = parm_args[0];
                 string groupName = normalizePath(parm_args[1]);
-                
+
                 // Get group details
                 IntPtr groupInfoPtr;
-                int resultCode = NetLocalGroupGetInfo(domain, groupName, 1, out groupInfoPtr);
-                if (resultCode == 0)
-                {
-                    LOCALGROUP_INFO_1 groupInfo = (LOCALGROUP_INFO_1)Marshal.PtrToStructure(groupInfoPtr, typeof(LOCALGROUP_INFO_1));
-                    result += "Alias Name: " + groupInfo.lgrpi1_name + Environment.NewLine;
-                    result += "Comment: " + groupInfo.lgrpi1_comment + Environment.NewLine + Environment.NewLine;
-                    NetApiBufferFree(groupInfoPtr);
-                }
+                int resultCode;
 
                 // Get members of the local group
-                List<string> groupMembers = GetLocalGroupMembers(groupName);
+                List<string> groupMembers = new List<string>(); // Inicializamos groupMembers fuera de los bloques if
+
+                if (domain != ".") 
+                {
+                    resultCode = NetGroupGetInfo(domain, groupName, 1, out groupInfoPtr);
+                    if (resultCode == 0)
+                    {
+                        GROUP_INFO_1 groupInfo = (GROUP_INFO_1)Marshal.PtrToStructure(groupInfoPtr, typeof(GROUP_INFO_1));
+                        result += "Group Name: " + groupInfo.grpi1_name + Environment.NewLine;
+                        result += "Comment: " + groupInfo.grpi1_comment + Environment.NewLine + Environment.NewLine;
+                        NetApiBufferFree(groupInfoPtr);
+                        groupMembers =  GetDomainGroupMembers(domain, groupName);
+                    }
+                }
+                else  // Grupos locales
+                {
+                    resultCode = NetLocalGroupGetInfo(null, groupName, 1, out groupInfoPtr);
+                    if (resultCode == 0)
+                    {
+                        LOCALGROUP_INFO_1 groupInfo = (LOCALGROUP_INFO_1)Marshal.PtrToStructure(groupInfoPtr, typeof(LOCALGROUP_INFO_1));
+                        result += "Alias Name: " + groupInfo.lgrpi1_name + Environment.NewLine;
+                        result += "Comment: " + groupInfo.lgrpi1_comment + Environment.NewLine + Environment.NewLine;
+                        NetApiBufferFree(groupInfoPtr);
+                        groupMembers =  GetLocalGroupMembers(groupName);
+                    }
+                }
+
                 foreach (string member in groupMembers)
                 {
                     result += member + Environment.NewLine;
                 }
             }
+
             else if (action == "edit")
             {
                 string domain = parm_args[0];
-                string username = parm_args[1];
-                string newPassword = parm_args[2];
-                
-                USER_INFO_1003 userInfoToUpdate = new USER_INFO_1003
+                string groupName = parm_args[1];
+                string newGroupName = parm_args[2];
+                            
+                LOCALGROUP_INFO_1 groupInfo = new LOCALGROUP_INFO_1
                 {
-                    usri1003_password = newPassword
+                    lgrpi1_name = newGroupName
                 };
 
-                IntPtr userInfoPtr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(USER_INFO_1)));
-                Marshal.StructureToPtr(userInfoToUpdate, userInfoPtr, false);
-
-                uint parm_err;
-                int resultCode = NetUserSetInfo(domain, username, 1003, userInfoPtr, out parm_err);
+                uint param_err;
+                if (domain == ".")
+                {
+                    domain = null;
+                }
+                
+                int resultCode = NetLocalGroupSetInfo(domain, groupName, 1, ref groupInfo, out param_err);
 
                 if (resultCode == 0)
                 {
-                    result += "Password for user '" + username + "' in the '"+ domain + "' has been successfully updated." + Environment.NewLine;
+                    result += "Local group '" + groupName + "' has been successfully renamed to '" + newGroupName + "'." + Environment.NewLine;
                 }
                 else
                 {
-                    result += "Failed to update for user '" + username + "' in the '"+ domain + "'. Error code: " + resultCode + Environment.NewLine;
+                    result += "Failed to rename local group '" + groupName + "' to '" + newGroupName + "'. Error code: " + resultCode + Environment.NewLine;
                 }
 
-                Marshal.FreeHGlobal(userInfoPtr);
             }
             else if (action == "delete")
             {
                 string domain = parm_args[0];
-                string username = parm_args[1];
+                string groupName = parm_args[1];
+                string username = parm_args[2];
             
-                int resultCode = NetUserDel(domain, username);
-
-                if (resultCode == 0)
+                int resultCode;
+                
+                if (domain != ".")
                 {
-                    result += "User " + username + "' in the '"+ domain + " has been successfully deleted." + Environment.NewLine;
+                    resultCode = NetGroupDelUser(domain, groupName, username); 
                 }
                 else
                 {
-                    result += "Failed to delete user '" + username + "' in the '"+ domain + "'. Error code: " + resultCode + Environment.NewLine;
+                    resultCode = NetGroupDelUser(null, groupName, username);
+                }
+
+                if (resultCode == 0)
+                {
+                    result += "User " + username + "' from '" + groupName + "' in the '"+ domain + " has been successfully deleted." + Environment.NewLine;
+                }
+                else
+                {
+                    result += "Failed to delete user '" + username + "' from '" + groupName +"' in the '"+ domain + "'. Error code: " + resultCode + Environment.NewLine;
                 }
             }
         }
@@ -812,7 +991,10 @@ public class Module_net
         {
             changeCWD(pwd);
             if (token != NON_TOKEN_VALUE)
+            {
                 RevertToSelf();
+                freeToken(token);
+            }
         }
         return results;
     }
